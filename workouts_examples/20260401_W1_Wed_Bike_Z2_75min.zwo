@@ -1,0 +1,15 @@
+<workout_file>
+    <author>Training Plan</author>
+    <n>Bike — aerobic zone 2 (75 min)</n>
+    <description>Aerobic zone 2 workout. 65–75% FTP throughout the main block. Goal — accumulate time, not effort. FTP ~280W → target 182–210W.</description>
+    <sportType>bike</sportType>
+    <workout>
+        <Warmup Duration="600" PowerLow="0.45" PowerHigh="0.62"/>
+        <SteadyState Duration="3300" Power="0.68">
+            <textevent timeoffset="0" message="Zone 2 — hold 65-75% FTP. Conversational pace. Just spin."/>
+        </SteadyState>
+        <Cooldown Duration="600" PowerLow="0.62" PowerHigh="0.45">
+            <textevent timeoffset="0" message="Nice work! Cool-down 10 minutes."/>
+        </Cooldown>
+    </workout>
+</workout_file>

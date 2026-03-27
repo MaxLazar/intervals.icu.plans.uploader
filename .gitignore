@@ -1,0 +1,13 @@
+# Credentials
+.env
+
+# Workout files and archives
+workouts/*
+archives*/
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+*.rar
+*.7z
+.claude/
