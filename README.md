@@ -100,6 +100,23 @@ python3 upload_to_intervals.py --folder ./workouts --overwrite
 python3 upload_to_intervals.py --folder ./workouts --dry-run --verbose
 ```
 
+## Cleanup
+
+`cleanup_intervals.py` deletes planned events from the calendar starting from a given date. Completed activities are not affected — only planned events (WORKOUT, NOTE, RACE).
+
+```bash
+# Preview what would be deleted (no changes made):
+python3 cleanup_intervals.py --from 2026-04-01 --dry-run
+
+# Delete all planned events from April 1 onwards (up to 1 year):
+python3 cleanup_intervals.py --from 2026-04-01
+
+# Delete only a specific range:
+python3 cleanup_intervals.py --from 2026-04-01 --to 2026-04-30
+```
+
+Uses the same `.env` credentials as the uploader.
+
 ## Folder Structure
 
 Recommended layout:
