@@ -113,7 +113,7 @@ class IntervalsClient:
             "Content-Type": "application/json",
         }
 
-    def _request(self, method: str, path: str, body=None) -> dict:
+    def _request(self, method: str, path: str, body=None) -> dict | list:
         url = f"{self.base}{path}"
         data = json.dumps(body).encode() if body is not None else None
         req = Request(url, data=data, headers=self.headers, method=method)
@@ -150,6 +150,8 @@ class IntervalsClient:
     def whoami(self) -> dict:
         """Verify connection — return athlete data."""
         return self._request("GET", "")
+
+
 
 
 # ─── File parsers ─────────────────────────────────────────────────────────────
@@ -198,9 +200,11 @@ def parse_date_from_filename(filename: str) -> date | None:
 
 
 def parse_zwo(filepath: Path) -> dict | None:
-    """
-    Parse a .zwo file (Zwift Workout XML) and return an intervals.icu payload.
-    Date is taken from the filename.
+    """Parse a .zwo file and return an intervals.icu /events payload.
+
+    Warmup and Cooldown blocks are converted to type="Ramp" steps in workout_doc
+    using intervals.icu's native format: {"type":"Ramp","power":{"start":X,"end":Y,"unit":"ftp"}}
+    This is exactly what intervals.icu's own workout builder produces and renders correctly.
     """
     try:
         tree = ET.parse(filepath)
@@ -212,7 +216,6 @@ def parse_zwo(filepath: Path) -> dict | None:
     name = (root.findtext("n") or root.findtext("name") or filepath.stem).strip()
     description = (root.findtext("description") or "").strip()
 
-    # Calculate total duration from workout blocks
     workout_el = root.find("workout")
     total_seconds = 0
     if workout_el is not None:
@@ -222,9 +225,9 @@ def parse_zwo(filepath: Path) -> dict | None:
                 dur = int(float(el.get("Duration", 0)))
             elif el.tag == "IntervalsT":
                 reps = int(float(el.get("Repeat", 1)))
-                on = int(float(el.get("OnDuration", 0)))
-                off = int(float(el.get("OffDuration", 0)))
-                dur = reps * (on + off)
+                on   = int(float(el.get("OnDuration", 0)))
+                off  = int(float(el.get("OffDuration", 0)))
+                dur  = reps * (on + off)
             elif el.tag == "Ramp":
                 dur = int(float(el.get("Duration", 0)))
             total_seconds += dur
@@ -233,20 +236,88 @@ def parse_zwo(filepath: Path) -> dict | None:
 
     icu_description = _zwo_to_icu_description(workout_el) if workout_el is not None else ""
     if description:
-        icu_description = icu_description + "\n\n" + description if icu_description else description
+        icu_description = (icu_description + "\n\n" + description) if icu_description else description
 
-    payload = {
+    steps = _zwo_to_icu_steps(workout_el) if workout_el is not None else []
+
+    return {
         "category":         "WORKOUT",
         "name":             name,
         "type":             "Ride",
         "description":      icu_description,
         "moving_time":      total_seconds if total_seconds > 0 else None,
+        "start_date_local": (workout_date.isoformat() + "T00:00:00") if workout_date else None,
+        "workout_doc":      {"steps": steps} if steps else None,
     }
 
-    if workout_date:
-        payload["start_date_local"] = workout_date.isoformat() + "T00:00:00"
 
-    return payload
+def _zwo_to_icu_steps(workout_el) -> list:
+    """Convert ZWO elements to intervals.icu workout_doc steps.
+
+    Uses intervals.icu's native step types:
+      Warmup/Cooldown → {"type": "Ramp", "power": {"start": X, "end": Y, "unit": "ftp"}}
+      SteadyState     → {"type": "SteadyState", "power": {"value": X, "unit": "ftp"}}
+      IntervalsT      → {"type": "IntervalsT", ...}
+
+    The "Ramp" type with power.start/power.end is exactly what intervals.icu's
+    own workout builder produces — this renders as a gradient in the power graph
+    and syncs correctly to Zwift.
+    """
+    steps = []
+    for el in workout_el:
+        tag = el.tag
+        if tag == "Warmup":
+            lo = float(el.get("PowerLow", 0.45))   # start power (low)
+            hi = float(el.get("PowerHigh", 0.65))  # end power (high)
+            steps.append({
+                "type":     "Ramp",
+                "duration": int(float(el.get("Duration", 0))),
+                "power":    {"start": lo, "end": hi, "unit": "ftp"},
+            })
+        elif tag == "Cooldown":
+            lo = float(el.get("PowerLow", 0.45))   # end power (low)
+            hi = float(el.get("PowerHigh", 0.65))  # start power (high)
+            steps.append({
+                "type":     "Ramp",
+                "duration": int(float(el.get("Duration", 0))),
+                "power":    {"start": hi, "end": lo, "unit": "ftp"},
+            })
+        elif tag == "SteadyState":
+            pct = float(el.get("Power", 0.65))
+            texts = [te.get("message", "") for te in el.findall("textevent")
+                     if te.get("timeoffset", "0") == "0"]
+            steps.append({
+                "type":     "SteadyState",
+                "duration": int(float(el.get("Duration", 0))),
+                "power":    {"value": pct, "unit": "ftp"},
+                "text":     texts[0] if texts else "",
+            })
+        elif tag == "IntervalsT":
+            reps    = int(float(el.get("Repeat", 1)))
+            on_dur  = int(float(el.get("OnDuration", 0)))
+            off_dur = int(float(el.get("OffDuration", 0)))
+            on_pwr  = float(el.get("OnPower", 1.0))
+            off_pwr = float(el.get("OffPower", 0.5))
+            on_texts = [te.get("message", "") for te in el.findall("textevent")
+                        if te.get("timeoffset", "0") == "0"]
+            steps.append({
+                "type":         "IntervalsT",
+                "repeat":       reps,
+                "on_duration":  on_dur,
+                "off_duration": off_dur,
+                "on_power":     {"value": on_pwr,  "unit": "ftp"},
+                "off_power":    {"value": off_pwr, "unit": "ftp"},
+                "text":         on_texts[0] if on_texts else "",
+            })
+        elif tag in ("Ramp", "FreeRide"):
+            lo = float(el.get("PowerLow", 0.5))
+            hi = float(el.get("PowerHigh", 0.8))
+            steps.append({
+                "type":     "Ramp",
+                "duration": int(float(el.get("Duration", 0))),
+                "power":    {"start": lo, "end": hi, "unit": "ftp"},
+            })
+    return steps
 
 
 def _fmt_dur(seconds: int) -> str:
@@ -368,9 +439,19 @@ def load_files(folder: Path, extensions: list[str]) -> list[Path]:
     return sorted(files, key=sort_key)
 
 
-def upload_file(client: IntervalsClient, filepath: Path,
-                dry_run: bool = False, overwrite: bool = False) -> bool:
-    """Upload a single file. Returns True on success."""
+def upload_file(client: IntervalsClient | None, filepath: Path,
+                dry_run: bool = False, overwrite: bool = False,
+                tags: list[str] | None = None) -> bool:
+    """Upload a single file to intervals.icu /events. Returns True on success.
+
+    .zwo  — creates a calendar event with workout_doc containing Ramp steps for
+            warmup/cooldown (intervals.icu native format, renders as gradient).
+    .xml  — creates a calendar event with text description.
+    tags  — list of tag strings added to every event (default: ["autoload"]).
+    """
+    if tags is None:
+        tags = ["autoload"]
+
     ext = filepath.suffix.lower()
 
     if ext == ".zwo":
@@ -385,27 +466,32 @@ def upload_file(client: IntervalsClient, filepath: Path,
         print(f"    failed to parse file")
         return False
 
-    sport = payload.get("sport", payload.get("type", "?"))
-    name = payload.get("name", filepath.stem)
-
+    sport        = payload.get("type", "?")
+    name         = payload.get("name", filepath.stem)
     workout_date = payload.get("start_date_local", "no date")
-    print(f"    {workout_date}  [{sport}]  {name}")
+    tag_str      = ", ".join(tags) if tags else "none"
+    print(f"    {workout_date}  [{sport}]  {name}  [tags: {tag_str}]")
 
     if dry_run:
         print(f"       (dry-run, skipping upload)")
         return True
 
-    if overwrite and "start_date_local" in payload:
+    # ── Overwrite: delete existing event with same name on same date ──────────
+    if overwrite and payload.get("start_date_local"):
         d = payload["start_date_local"].split("T")[0]
-        existing = client.get_events(d, d)
-        for ev in existing:
-            if ev.get("name") == name:
-                client.delete_event(ev["id"])
-                print(f"       deleted existing: {ev['id']}")
+        try:
+            for ev in client.get_events(d, d):
+                if ev.get("name") == name:
+                    client.delete_event(ev["id"])
+                    print(f"       deleted existing event id={ev['id']}")
+        except RuntimeError:
+            pass
 
     try:
+        if tags:
+            payload["tags"] = tags
         result = client.create_event(payload)
-        print(f"       created (id={result.get('id', '?')})")
+        print(f"       created id={result.get('id', '?')}")
         return True
     except RuntimeError as e:
         print(f"       error: {e}")
@@ -435,6 +521,12 @@ Examples:
 
   # Only files within a date range:
   python3 upload_to_intervals.py --folder ./workouts --from 2026-04-01 --to 2026-04-30
+
+  # Custom tags:
+  python3 upload_to_intervals.py --folder ./workouts --tags plan2026 triathlon
+
+  # No tags:
+  python3 upload_to_intervals.py --folder ./workouts --tags
         """
     )
 
@@ -458,6 +550,10 @@ Examples:
                         help="Upload only up to and including this date (YYYY-MM-DD)")
     parser.add_argument("--verbose",  "-v", action="store_true",
                         help="Print full JSON payload for each file")
+    parser.add_argument("--tags",     "-t", nargs="*", default=["autoload"],
+                        metavar="TAG",
+                        help="Tags added to every uploaded event. "
+                             "Default: autoload. Use --tags with no args to upload without tags.")
 
     args = parser.parse_args()
 
@@ -526,7 +622,7 @@ Examples:
             if payload:
                 print(f"     payload: {json.dumps(payload, ensure_ascii=False, indent=6)}")
 
-        success = upload_file(client, filepath, dry_run=args.dry_run, overwrite=args.overwrite)
+        success = upload_file(client, filepath, dry_run=args.dry_run, overwrite=args.overwrite, tags=args.tags or [])
         if success:
             ok += 1
         else:

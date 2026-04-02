@@ -3,12 +3,14 @@
 intervals.icu Event Cleanup
 ============================
 Deletes planned events (WORKOUT, NOTE, RACE) from the calendar
-starting from a given date.
+starting from a given date, optionally filtered by tag.
 
 Usage:
   python3 cleanup_intervals.py --from 2026-04-01
   python3 cleanup_intervals.py --from 2026-04-01 --to 2026-04-30
   python3 cleanup_intervals.py --from 2026-04-01 --dry-run
+  python3 cleanup_intervals.py --from 2026-04-01 --tag myplan
+  python3 cleanup_intervals.py --from 2026-04-01 --tag ""   # ignore tag, delete all
 
 Credentials via .env file or environment variables:
   INTERVALS_ATHLETE_ID=i00000
@@ -106,11 +108,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Delete all planned events from April 1 onwards (up to 1 year):
+  # Delete all "autoload"-tagged events from April 1 onwards (default):
   python3 cleanup_intervals.py --from 2026-04-01
 
-  # Delete only April:
-  python3 cleanup_intervals.py --from 2026-04-01 --to 2026-04-30
+  # Delete only April, specific tag:
+  python3 cleanup_intervals.py --from 2026-04-01 --to 2026-04-30 --tag myplan
+
+  # Delete all planned events regardless of tag:
+  python3 cleanup_intervals.py --from 2026-04-01 --tag ""
 
   # Preview without deleting:
   python3 cleanup_intervals.py --from 2026-04-01 --dry-run
@@ -126,6 +131,11 @@ Examples:
     parser.add_argument("--key", "-k",
                         default=os.environ.get("INTERVALS_API_KEY", ""),
                         help="API key (or INTERVALS_API_KEY env)")
+    parser.add_argument("--tag", default="autoload",
+                        help="Only delete events with this tag (default: autoload). "
+                             "Pass --tag \"\" to delete all events regardless of tag.")
+    parser.add_argument("--force", action="store_true",
+                        help="Also delete events that have a paired completed activity")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be deleted without deleting")
 
@@ -165,13 +175,25 @@ Examples:
         print(f"   Failed to fetch events: {e}")
         sys.exit(1)
 
-    targets = [e for e in events if e.get("category") in DELETABLE_CATEGORIES]
+    tag = args.tag.strip()
+
+    def is_deletable(e: dict) -> bool:
+        if e.get("category") not in DELETABLE_CATEGORIES:
+            return False
+        if not args.force and e.get("activity_id"):
+            return False  # already completed — skip by default
+        if tag and tag not in (e.get("tags") or []):
+            return False
+        return True
+
+    targets = [e for e in events if is_deletable(e)]
+    tag_note = f"  tag: {tag}" if tag else "  tag: (any)"
 
     if not targets:
-        print("No planned events found in this range.")
+        print(f"No planned events found in this range.{tag_note}")
         return
 
-    print(f"Found {len(targets)} planned event(s):\n")
+    print(f"Found {len(targets)} planned event(s){tag_note}:\n")
     for ev in targets:
         date_str = (ev.get("start_date_local") or "")[:10]
         print(f"  [{date_str}]  {ev.get('category', '?'):20}  {ev.get('name', '?')}  (id={ev['id']})")

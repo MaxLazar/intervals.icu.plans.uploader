@@ -41,10 +41,14 @@ python3 upload_to_intervals.py --folder ./workouts --athlete i12345 --key your_a
 ## File Formats
 
 ### Cycling — `.zwo` (Zwift Workout)
-Standard Zwift format. The script reads the workout structure (warmup, intervals, cooldown, ramps) and creates a **calendar event** with a power graph showing all steps as percentages of FTP.
+Standard Zwift `.zwo` format. The script parses all workout blocks (Warmup, SteadyState, IntervalsT, Cooldown, Ramp, FreeRide) and converts them into intervals.icu `workout_doc.steps` entries for a calendar event via `POST /events`.
+
+- Warmup/Cooldown → `Ramp` step with `power.start`, `power.end`, `ftp` unit
+- SteadyState → `SteadyState` step
+- IntervalsT → `IntervalsT` step
 
 ### Swim / Run / Other — `.xml`
-Simple format with tags:
+Custom format for non-bike workouts; parsed into planned calendar events via `POST /events`.
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <workout>
@@ -83,6 +87,14 @@ For `.zwo` files the date is always taken from the filename using the same patte
 --to            Upload only up to this date (YYYY-MM-DD)
 --verbose, -v   Print full JSON payload for each file
 ```
+
+## Internal behavior
+
+- `.zwo` files are parsed into JSON payloads with `workout_doc.steps`, then `POST`ed to `/api/v1/athlete/{id}/events`.
+- `.xml` files become planned event payloads (`category=WORKOUT`, `type=...`) posted to `/events`.
+- The client also has `create_event_bulk(events)` for `/events/bulk` usage.
+- Existing event overwrite uses `GET /events` on date and deletes names that match before re-creating.
+
 
 ## Examples
 
